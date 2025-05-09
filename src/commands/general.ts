@@ -1,5 +1,5 @@
 import { Message, EmbedBuilder } from 'discord.js';
-import { listServers, getServerResources, PterodactylServer, PterodactylServerResourceState } from '../pterodactyl'; // Adjust path as needed
+import { listServers, getServerResources, PterodactylServer, PterodactylServerResourceState } from '../pterodactyl';
 
 export async function handleAsunaHello(message: Message): Promise<void> {
     // The check for 'hello' is now primarily done in index.ts before calling this.
