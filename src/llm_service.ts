@@ -26,6 +26,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 // Read Pterodactyl default IDs directly in llm_service
 const PTERO_DEFAULT_OWNER_ID_STR = process.env.PTERODACTYL_DEFAULT_OWNER_ID;
 const PTERO_DEFAULT_NODE_ID_STR = process.env.PTERODACTYL_DEFAULT_NODE_ID;
+const PTERO_GAME_SERVER_DOMAIN = process.env.PTERODACTYL_SERVER_DOMAIN;
 
 let PTERO_DEFAULT_OWNER_ID: number | undefined;
 let PTERO_DEFAULT_NODE_ID: number | undefined;
@@ -50,18 +51,18 @@ if (PTERO_DEFAULT_NODE_ID_STR) {
     console.warn('WARNING: Pterodactyl Default Node ID not found in .env. Server creation will fail (cannot find allocations).');
 }
 
-console.log('VERBOSE_LOG: [LLM Service] Initializing OpenAI client...');
+console.log('Initializing OpenAI client...');
 const openai = OPENAI_API_KEY ? new OpenAI({
     apiKey: OPENAI_API_KEY,
     timeout: 45 * 1000, // 45 seconds timeout
     maxRetries: 1,
 }) : null;
 if (openai) {
-    console.log('VERBOSE_LOG: [LLM Service] OpenAI client initialized.');
+    console.log('OpenAI client initialized.');
 } else if (OPENAI_API_KEY) {
-    console.error('VERBOSE_LOG: [LLM Service] CRITICAL_ERROR: OpenAI API Key was provided, but client initialization failed!');
+    console.error('CRITICAL_ERROR: OpenAI API Key was provided, but client initialization failed!');
 } else {
-    console.log('VERBOSE_LOG: [LLM Service] OpenAI client not initialized as API key is missing.');
+    console.log('OpenAI client not initialized as API key is missing.');
 }
 
 // Simplified PterodactylServer info for the list_pterodactyl_servers tool response
@@ -189,7 +190,7 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         type: 'function',
         function: {
             name: 'create_pterodactyl_server',
-            description: 'Creates a new game server. Requires the server name and the type of game/egg to install. User can optionally provide specific environment variables.',
+            description: 'Creates a new game server. Requires the server name and the type of game/egg to install. User can optionally provide specific environment variables and resource limits.',
             parameters: {
                 type: 'object',
                 properties: {
@@ -205,9 +206,53 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                         type: 'string',
                         description: 'Optional. The name of the Nest (category) the Egg belongs to. Helps disambiguate if multiple Eggs have similar names.'
                     },
+                    resource_limits: {
+                        type: 'object',
+                        description: 'Optional. Custom resource limits for the server.',
+                        properties: {
+                            cpu: {
+                                type: 'number',
+                                description: 'CPU limit as a percentage (e.g., 200 for 2 cores)'
+                            },
+                            memory: {
+                                type: 'number',
+                                description: 'Memory limit in MB (e.g., 4096 for 4GB)'
+                            },
+                            disk: {
+                                type: 'number',
+                                description: 'Disk space limit in MB (e.g., 10240 for 10GB)'
+                            },
+                            swap: {
+                                type: 'number',
+                                description: 'Swap space limit in MB (0 recommended, -1 for unlimited)'
+                            },
+                            io: {
+                                type: 'number',
+                                description: 'IO weight (10-1000, 500 is default)'
+                            }
+                        }
+                    },
+                    feature_limits: {
+                        type: 'object',
+                        description: 'Optional. Custom feature limits for the server.',
+                        properties: {
+                            databases: {
+                                type: 'number',
+                                description: 'Maximum number of databases'
+                            },
+                            backups: {
+                                type: 'number',
+                                description: 'Maximum number of backups'
+                            },
+                            allocations: {
+                                type: 'number',
+                                description: 'Maximum number of network allocations (ports)'
+                            }
+                        }
+                    },
                     environment_variables: {
                         type: 'object',
-                        description: 'Optional. Key-value pairs of environment variables to set for the server, overriding defaults from the Egg if specified. E.g., { \"SERVER_MOTD\": \"Welcome to my new server!\" }',
+                        description: 'Optional. Key-value pairs of environment variables to set for the server, overriding defaults from the Egg if specified. E.g., { "SERVER_MOTD": "Welcome to my new server!", "SERVER_PASSWORD": "secret123", "SNM_OWNER_STEAM_ID": "76561197963264615" }',
                         additionalProperties: { type: 'string' } // Allows any string key-value pairs
                     }
                 },
@@ -228,9 +273,9 @@ export async function processUserQueryWithLLM(discordMessage: Message): Promise<
     // Extract the actual query content, removing the bot mention
     const userQuery = discordMessage.content.replace(/<@!?\\d+>/g, '').trim();
     
-    console.log(`VERBOSE_LOG: [LLM Service] Processing query from ${discordMessage.author.tag}: "${userQuery}"`);
+    console.log(`Processing query from ${discordMessage.author.tag}: "${userQuery}"`);
     if (!openai) {
-        console.log("VERBOSE_LOG: [LLM Service] OpenAI client not initialized. Cannot process LLM query.");
+        console.log("OpenAI client not initialized. Cannot process LLM query.");
         return "I'm sorry, but my connection to the advanced language model is currently unavailable.";
     }
     if (!userQuery) {
@@ -241,33 +286,52 @@ export async function processUserQueryWithLLM(discordMessage: Message): Promise<
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
         {
             role: 'system',
-            content: 'You are Asuna, a helpful Discord bot managing game servers. \nUse `list_pterodactyl_servers_basic_info` for general server info. \nUse `get_specific_server_details_and_status` for live status of ONE server. \nUse `get_online_status_for_all_servers` for broad online/offline status. \nUse `send_pterodactyl_power_signal` to start/stop/restart servers. \nUse `list_available_games_and_types` to show what can be installed. \nUse `get_specific_egg_installation_details` for setup requirements of a game type. \nUse `create_pterodactyl_server` to create a new server; you MUST ask for a server name and the type of game (Egg). \nIf a tool provides a specific `user_message` in its JSON response, use that message directly for the user. Otherwise, summarize function results. Do not output raw JSON. Confirm important actions.'
+            content: `You are Asuna, a helpful Discord bot managing game servers. 
+            \nUse \`list_pterodactyl_servers_basic_info\` for general server info. 
+            \nUse \`get_specific_server_details_and_status\` for live status of ONE server. 
+            \nUse \`get_online_status_for_all_servers\` for broad online/offline status. 
+            \nUse \`send_pterodactyl_power_signal\` to start/stop/restart servers. 
+            \nUse \`list_available_games_and_types\` to show what can be installed. 
+            \nUse \`get_specific_egg_installation_details\` for setup requirements of a game type. 
+            \nUse \`create_pterodactyl_server\` to create a new server; you MUST ask for a server name and the type of game (Egg). 
+            \nWhen creating servers, if the user provides any configuration values (like passwords, admin IDs, etc.), you MUST include them in the environment_variables object using the exact environment variable name from the egg (e.g., if the egg requires SNM_OWNER_STEAM_ID, use that exact name).
+            \nIf a tool provides a specific \`user_message\` in its JSON response, use that message directly for the user. 
+            \nOtherwise, summarize function results. Do not output raw JSON. Confirm important actions.
+            \nThe domain for all game servers is ${PTERO_GAME_SERVER_DOMAIN}. You can give this url to users and append the game server port to it. Example: ${PTERO_GAME_SERVER_DOMAIN}:25565
+            
+            \nYou can use Discord's markdown formatting to make your messages more readable:
+            \n- Use **bold** for emphasis on important information
+            \n- Use \`code blocks\` for server IDs, commands, and technical details
+            \n- Use *italics* for subtle emphasis
+            \n- Use > for quoting or highlighting important messages
+            \n- Use bullet points (-) for lists
+            \n- Use \`\`\` for multi-line code blocks when needed`
         },
-        { role: 'user', content: userQuery }, // Use the extracted userQuery
+        { role: 'user', content: userQuery },
     ];
 
     try {
-        console.log('VERBOSE_LOG: [LLM Service] Sending initial request to OpenAI. Messages:', JSON.stringify(messages, null, 2));
+        console.log('Sending initial request to OpenAI. Messages:', JSON.stringify(messages, null, 2));
         let response = await openai.chat.completions.create({
             model: 'gpt-3.5-turbo-0125', // Ensure using a model that supports tool calling well
             messages: messages,
             tools: tools,
             tool_choice: 'auto', 
         });
-        console.log('VERBOSE_LOG: [LLM Service] Received initial response from OpenAI.');
+        console.log('Received initial response from OpenAI.');
         let responseMessage = response.choices[0].message;
-        console.log('VERBOSE_LOG: [LLM Service] Initial response message from LLM:', JSON.stringify(responseMessage, null, 2));
+        console.log('Initial response message from LLM:', JSON.stringify(responseMessage, null, 2));
 
         let iterationCount = 0;
         const maxIterations = 5; // Safety break for tool call loops
 
         while (responseMessage.tool_calls && iterationCount < maxIterations) {
             iterationCount++;
-            console.log(`VERBOSE_LOG: [LLM Service] Iteration ${iterationCount}. LLM decided to call tool(s):`, JSON.stringify(responseMessage.tool_calls, null, 2));
+            console.log(`Iteration ${iterationCount}. LLM decided to call tool(s):`, JSON.stringify(responseMessage.tool_calls, null, 2));
             messages.push(responseMessage); 
 
             for (const toolCall of responseMessage.tool_calls) {
-                console.log(`VERBOSE_LOG: [LLM Service] Executing tool call: ${toolCall.function.name}, Args: ${toolCall.function.arguments}`);
+                console.log(`Executing tool call: ${toolCall.function.name}, Args: ${toolCall.function.arguments}`);
                 const functionName = toolCall.function.name;
                 const functionArgs = JSON.parse(toolCall.function.arguments);
                 let functionResponseContent = '';
@@ -282,12 +346,12 @@ export async function processUserQueryWithLLM(discordMessage: Message): Promise<
                         const matchingByName = allServers.filter((s: PterodactylServer) => s.attributes.name.toLowerCase().includes(lowerCaseQuery));
                         if (matchingByName.length === 1) targetServer = matchingByName[0];
                         else if (matchingByName.length > 1) { 
-                            console.log(`VERBOSE_LOG: [LLM Service - resolveServerId] Ambiguous server query: "${query}". Multiple matches found.`);
+                            console.log(`Ambiguous server query: "${query}". Multiple matches found.`);
                             return null; 
                         }
                     }
                     const resolvedId = targetServer ? targetServer.attributes.identifier : null;
-                    console.log(`VERBOSE_LOG: [LLM Service - resolveServerId] Query: "${query}", Resolved ID: "${resolvedId}"`);
+                    console.log(`Query: "${query}", Resolved ID: "${resolvedId}"`);
                     return resolvedId;
                 }
 
@@ -377,7 +441,7 @@ export async function processUserQueryWithLLM(discordMessage: Message): Promise<
                             let errorMsg = `Could not find an Egg named "${functionArgs.egg_name}"`;
                             if (nestNameToFind) errorMsg += ` in Nest "${functionArgs.nest_name}"`;
                             errorMsg += ". Please ensure the names are correct, or list available games to see valid options.";
-                            console.warn(`VERBOSE_LOG: [LLM Service] Failed to find egg details: ${errorMsg}`);
+                            console.warn(`Failed to find egg details: ${errorMsg}`);
                             functionResponseContent = JSON.stringify({ error: errorMsg });
                         }
                     } else if (functionName === 'create_pterodactyl_server') {
@@ -415,57 +479,92 @@ export async function processUserQueryWithLLM(discordMessage: Message): Promise<
                                 } else {
                                     // Prepare environment variables
                                     const finalEnvironment: Record<string, string | number | boolean> = {};
+                                    
+                                    // First, set all default values from the egg
                                     targetEgg.attributes.relationships?.variables?.data.forEach(v => {
                                         finalEnvironment[v.attributes.env_variable] = v.attributes.default_value;
                                     });
+
+                                    // Then, override with any user-provided values
                                     if (userProvidedEnv) {
+                                        console.log('User provided environment variables:', userProvidedEnv);
                                         for (const key in userProvidedEnv) {
                                             finalEnvironment[key] = userProvidedEnv[key];
                                         }
                                     }
-                                    // For Pterodactyl API, boolean values might need to be "1" or "0", or true/false. Check panel behavior.
-                                    // For now, we pass them as is from user or default (which are strings from Egg). String is safer.
 
-                                    const creationOptions: ServerCreationOptions = {
-                                        name: serverName,
-                                        user: PTERO_DEFAULT_OWNER_ID!,
-                                        egg: targetEgg.attributes.id,
-                                        docker_image: targetEgg.attributes.docker_image,
-                                        startup: targetEgg.attributes.startup,
-                                        environment: finalEnvironment,
-                                        limits: { memory: 2048, swap: 0, disk: 10240, io: 500, cpu: 100 }, // TODO: Make configurable or Egg-based
-                                        feature_limits: { databases: 0, allocations: 1, backups: 1 }, // TODO: Make configurable
-                                        allocation: { default: availableAllocation.attributes.id },
-                                        start_on_completion: true,
-                                    };
+                                    console.log('Final environment variables:', finalEnvironment);
 
-                                    const createdServer = await createServer(creationOptions);
-                                    if (createdServer) {
-                                        // Call the monitor function (fire and forget)
-                                        monitorServerInstallationAndStartup(
-                                            createdServer.attributes.uuid, // Using UUID for App API calls initially
-                                            createdServer.attributes.identifier, // For client API resource checks
-                                            createdServer.attributes.name, 
-                                            discordMessage
-                                        );
-                                        functionResponseContent = JSON.stringify({
-                                            success: true,
-                                            action_description: `Server creation for "${createdServer.attributes.name}" has been successfully initiated. It is now installing.`,
-                                            user_message: `I've started the creation process for server "${createdServer.attributes.name}". I will send another message here when it's fully online and ready!`
+                                    // Check for any required variables that are still empty
+                                    const missingRequiredVars = targetEgg.attributes.relationships?.variables?.data
+                                        .filter(v => v.attributes.rules.includes('required') && (!finalEnvironment[v.attributes.env_variable] || finalEnvironment[v.attributes.env_variable] === ''))
+                                        .map(v => v.attributes.name);
+
+                                    if (missingRequiredVars && missingRequiredVars.length > 0) {
+                                        console.log('Missing required variables:', missingRequiredVars);
+                                        console.log('All egg variables:', targetEgg.attributes.relationships?.variables?.data);
+                                        functionResponseContent = JSON.stringify({ 
+                                            error: `Missing required configuration values: ${missingRequiredVars.join(', ')}. Please provide these values when creating the server.`,
+                                            required_variables: targetEgg.attributes.relationships?.variables?.data
+                                                .filter(v => v.attributes.rules.includes('required'))
+                                                .map(v => ({
+                                                    name: v.attributes.name,
+                                                    env_variable: v.attributes.env_variable,
+                                                    description: v.attributes.description
+                                                }))
                                         });
                                     } else {
-                                        functionResponseContent = JSON.stringify({ error: 'Server creation process failed at the API level. Check bot logs for details.' });
+                                        const creationOptions: ServerCreationOptions = {
+                                            name: serverName,
+                                            user: PTERO_DEFAULT_OWNER_ID!,
+                                            egg: targetEgg.attributes.id,
+                                            docker_image: targetEgg.attributes.docker_image,
+                                            startup: targetEgg.attributes.startup,
+                                            environment: finalEnvironment,
+                                            limits: {
+                                                cpu: functionArgs.resource_limits?.cpu ?? 100,
+                                                memory: functionArgs.resource_limits?.memory ?? 1024,
+                                                disk: functionArgs.resource_limits?.disk ?? 10240,
+                                                swap: functionArgs.resource_limits?.swap ?? 0,
+                                                io: functionArgs.resource_limits?.io ?? 500
+                                            },
+                                            feature_limits: {
+                                                databases: 0,
+                                                allocations: 1,
+                                                backups: 1
+                                            },
+                                            allocation: { default: availableAllocation.attributes.id },
+                                            start_on_completion: true,
+                                        };
+
+                                        const createdServer = await createServer(creationOptions);
+                                        if (createdServer) {
+                                            // Call the monitor function (fire and forget)
+                                            monitorServerInstallationAndStartup(
+                                                createdServer.attributes.uuid, // Using UUID for App API calls initially
+                                                createdServer.attributes.identifier, // For client API resource checks
+                                                createdServer.attributes.name, 
+                                                discordMessage
+                                            );
+                                            functionResponseContent = JSON.stringify({
+                                                success: true,
+                                                action_description: `Server creation for "${createdServer.attributes.name}" has been successfully initiated. It is now installing.`,
+                                                user_message: `I've started the creation process for server "${createdServer.attributes.name}". I will send another message here when it's fully online and ready!`
+                                            });
+                                        } else {
+                                            functionResponseContent = JSON.stringify({ error: 'Server creation process failed at the API level. Check bot logs for details.' });
+                                        }
                                     }
                                 }
                             }
                         }
                     } else {
-                        console.warn(`VERBOSE_LOG: [LLM Service] LLM tried to call unknown function: ${functionName}`);
+                        console.warn(`LLM tried to call unknown function: ${functionName}`);
                         functionResponseContent = JSON.stringify({ error: `Unknown function: ${functionName}` });
                     }
-                    console.log(`VERBOSE_LOG: [LLM Service] Tool ${functionName} executed. Response content length: ${functionResponseContent.length}`);
+                    console.log(`Tool ${functionName} executed. Response content length: ${functionResponseContent.length}`);
                 } catch (toolError: any) {
-                    console.error(`VERBOSE_LOG: [LLM Service] CRITICAL_ERROR executing tool ${functionName}:`, toolError);
+                    console.error(`CRITICAL_ERROR executing tool ${functionName}:`, toolError);
                     functionResponseContent = JSON.stringify({ error: `Error executing tool ${functionName}: ${toolError.message || 'Unknown error'}` });
                 }
 
@@ -478,20 +577,20 @@ export async function processUserQueryWithLLM(discordMessage: Message): Promise<
             }
 
             if (iterationCount >= maxIterations) {
-                console.warn('VERBOSE_LOG: [LLM Service] WARNING: Exceeded maximum tool call iterations. Breaking loop.');
+                console.warn('WARNING: Exceeded maximum tool call iterations. Breaking loop.');
                 return "I seem to be stuck in a loop trying to figure that out. Could you simplify your request?";
             }
 
-            console.log('VERBOSE_LOG: [LLM Service] Sending function results back to LLM. Messages:', JSON.stringify(messages, null, 2));
+            console.log('Sending function results back to LLM. Messages:', JSON.stringify(messages, null, 2));
             response = await openai.chat.completions.create({
                 model: 'gpt-3.5-turbo-0125',
                 messages: messages,
                 tools: tools,
                 tool_choice: 'auto',
             });
-            console.log('VERBOSE_LOG: [LLM Service] Received response from LLM after sending tool results.');
+            console.log('Received response from LLM after sending tool results.');
             responseMessage = response.choices[0].message;
-            console.log('VERBOSE_LOG: [LLM Service] LLM response message after tool call(s):', JSON.stringify(responseMessage, null, 2));
+            console.log('LLM response message after tool call(s):', JSON.stringify(responseMessage, null, 2));
         }
 
         // Before returning responseMessage.content, check if it's a JSON from our tool with user_message
@@ -504,7 +603,7 @@ export async function processUserQueryWithLLM(discordMessage: Message): Promise<
             try {
                 const potentialToolResponse = JSON.parse(responseMessage.content); // This is unlikely for LLM final content
                 if (potentialToolResponse.user_message) {
-                    console.log('VERBOSE_LOG: [LLM Service] Using user_message from LLM content (parsed JSON).');
+                    console.log('Using user_message from LLM content (parsed JSON).');
                     return potentialToolResponse.user_message;
                 }
             } catch (e) { /* Not a JSON string, proceed as normal */ }
@@ -515,17 +614,17 @@ export async function processUserQueryWithLLM(discordMessage: Message): Promise<
         // it should have already processed the tool_response containing our `user_message`.
 
         if (responseMessage.content) {
-            console.log(`VERBOSE_LOG: [LLM Service] Final LLM response: "${responseMessage.content.trim()}"`);
+            console.log(`Final LLM response: "${responseMessage.content.trim()}"`);
             return responseMessage.content.trim();
         } else {
-            console.error('VERBOSE_LOG: [LLM Service] CRITICAL_ERROR: LLM final response content was empty or in an unexpected format.', JSON.stringify(responseMessage, null, 2));
+            console.error('CRITICAL_ERROR: LLM final response content was empty or in an unexpected format.', JSON.stringify(responseMessage, null, 2));
             return "I processed the information, but I'm having a little trouble phrasing my response.";
         }
 
     } catch (error: any) {
-        console.error('VERBOSE_LOG: [LLM Service] CRITICAL_ERROR during LLM processing (OpenAI API call or other unhandled exception):', error);
+        console.error('CRITICAL_ERROR during LLM processing (OpenAI API call or other unhandled exception):', error);
         if (error.response) {
-            console.error('VERBOSE_LOG: [LLM Service] OpenAI API Error Response Data:', error.response.data);
+            console.error('OpenAI API Error Response Data:', error.response.data);
         }
         return "I encountered an issue while trying to process your request with the language model and its tools.";
     }
@@ -538,7 +637,7 @@ async function monitorServerInstallationAndStartup(
     serverName: string, 
     originalMessage: Message
 ) {
-    console.log(`VERBOSE_LOG: [LLM Service Monitor] Starting to monitor server "${serverName}" (UUID: ${serverUuid}, ID: ${serverIdentifier})`);
+    console.log(`Starting to monitor server "${serverName}" (UUID: ${serverUuid}, ID: ${serverIdentifier})`);
     const monitoringTimeoutMs = 10 * 60 * 1000; // 10 minutes total timeout
     const initialPollDelayMs = 15 * 1000; // 15 seconds for install status
     const resourcePollDelayMs = 10 * 1000; // 10 seconds for resource status
@@ -547,7 +646,7 @@ async function monitorServerInstallationAndStartup(
     try {
         // Phase 1: Wait for installation to complete
         let isStillInstalling = true;
-        console.log(`VERBOSE_LOG: [LLM Service Monitor] "${serverName}" - Phase 1: Checking installation status...`);
+        console.log(`"${serverName}" - Phase 1: Checking installation status...`);
         while (isStillInstalling && (Date.now() - startTime < monitoringTimeoutMs)) {
             // Using App API to get server details by UUID, as it's more robust immediately after creation
             // The /api/application/servers/{id} endpoint is for the *internal numeric ID*, not UUID or identifier.
@@ -561,71 +660,77 @@ async function monitorServerInstallationAndStartup(
             if (currentServerData) {
                 isStillInstalling = currentServerData.attributes.is_installing;
                 if (isStillInstalling) {
-                    console.log(`VERBOSE_LOG: [LLM Service Monitor] "${serverName}" is still installing. Waiting ${initialPollDelayMs / 1000}s...`);
+                    console.log(`"${serverName}" is still installing. Waiting ${initialPollDelayMs / 1000}s...`);
                     await new Promise(resolve => setTimeout(resolve, initialPollDelayMs));
                 } else {
-                    console.log(`VERBOSE_LOG: [LLM Service Monitor] "${serverName}" finished installation phase.`);
+                    console.log(`"${serverName}" finished installation phase.`);
                     break; // Exit install check loop
                 }
             } else {
-                console.log(`VERBOSE_LOG: [LLM Service Monitor] "${serverName}" not yet found in server list. Waiting ${initialPollDelayMs / 1000}s...`);
+                console.log(`"${serverName}" not yet found in server list. Waiting ${initialPollDelayMs / 1000}s...`);
                 await new Promise(resolve => setTimeout(resolve, initialPollDelayMs));
             }
             if (Date.now() - startTime >= monitoringTimeoutMs) {
-                console.warn(`VERBOSE_LOG: [LLM Service Monitor] "${serverName}" timed out waiting for installation to complete.`);
+                console.warn(`"${serverName}" timed out waiting for installation to complete.`);
                 if (originalMessage.channel instanceof TextChannel || originalMessage.channel instanceof NewsChannel || originalMessage.channel instanceof ThreadChannel || originalMessage.channel instanceof DMChannel) {
                     await originalMessage.channel.send(`Server "${serverName}" (ID: ${serverIdentifier}) took too long during its installation phase. Please check its status manually.`);
-                } else { console.warn(`VERBOSE_LOG: [LLM Service Monitor] Cannot send timeout message to channel type: ${originalMessage.channel.type}`); }
+                } else { console.warn(`Cannot send timeout message to channel type: ${originalMessage.channel.type}`); }
                 return;
             }
         }
         if (isStillInstalling) return; // Timed out in inner check
 
         // Phase 2: Wait for server to be running
-        console.log(`VERBOSE_LOG: [LLM Service Monitor] "${serverName}" - Phase 2: Checking resource status for 'running' state...`);
+        console.log(`"${serverName}" - Phase 2: Checking resource status for 'running' state...`);
         let serverIsRunning = false;
         while (!serverIsRunning && (Date.now() - startTime < monitoringTimeoutMs)) {
             const resources = await getServerResources(serverIdentifier); // Uses Client API with server short ID
             if (resources) {
-                console.log(`VERBOSE_LOG: [LLM Service Monitor] "${serverName}" current state: ${resources.current_state}`);
+                console.log(`"${serverName}" current state: ${resources.current_state}`);
                 if (resources.current_state === 'running') {
                     serverIsRunning = true;
-                    console.log(`VERBOSE_LOG: [LLM Service Monitor] "${serverName}" is now RUNNING.`);
+                    console.log(`"${serverName}" is now RUNNING.`);
                     if (originalMessage.channel instanceof TextChannel || originalMessage.channel instanceof NewsChannel || originalMessage.channel instanceof ThreadChannel || originalMessage.channel instanceof DMChannel) {
-                        await originalMessage.channel.send(`🎉 Server "**${serverName}**" (ID: \`${serverIdentifier}\`) is now online and ready!`);
-                    } else { console.warn(`VERBOSE_LOG: [LLM Service Monitor] Cannot send success message to channel type: ${originalMessage.channel.type}`); }
+                        // Get the server's port from the allocations
+                        const servers = await listServers();
+                        const currentServer = servers.find(s => s.attributes.uuid === serverUuid);
+                        const defaultAllocation = currentServer?.attributes.relationships?.allocations?.data.find(a => a.attributes.is_default);
+                        const port = defaultAllocation?.attributes.port || 'unknown';
+                        
+                        await originalMessage.channel.send(`🎉 Server "**${serverName}**" (ID: \`${serverIdentifier}\`) is now online and ready! You can connect at ${PTERO_GAME_SERVER_DOMAIN}:${port}`);
+                    } else { console.warn(`Cannot send success message to channel type: ${originalMessage.channel.type}`); }
                     return;
                 } else if (resources.current_state === 'offline') {
                     // Optional: Attempt to start the server if it's offline post-install
-                    console.log(`VERBOSE_LOG: [LLM Service Monitor] "${serverName}" is OFFLINE. Attempting to start...`);
+                    console.log(`"${serverName}" is OFFLINE. Attempting to start...`);
                     await sendPowerSignal(serverIdentifier, 'start');
                     // Wait a bit after sending start signal before next poll
                 } else if (resources.current_state === 'starting') {
-                    console.log(`VERBOSE_LOG: [LLM Service Monitor] "${serverName}" is STARTING. Waiting ${resourcePollDelayMs / 1000}s...`);
+                    console.log(`"${serverName}" is STARTING. Waiting ${resourcePollDelayMs / 1000}s...`);
                 } else {
-                    console.log(`VERBOSE_LOG: [LLM Service Monitor] "${serverName}" is in state: ${resources.current_state}. Waiting ${resourcePollDelayMs / 1000}s...`);
+                    console.log(`"${serverName}" is in state: ${resources.current_state}. Waiting ${resourcePollDelayMs / 1000}s...`);
                 }
             } else {
-                console.log(`VERBOSE_LOG: [LLM Service Monitor] "${serverName}" - Could not fetch resources yet. Waiting ${resourcePollDelayMs / 1000}s...`);
+                console.log(`"${serverName}" - Could not fetch resources yet. Waiting ${resourcePollDelayMs / 1000}s...`);
             }
             await new Promise(resolve => setTimeout(resolve, resourcePollDelayMs));
             if (Date.now() - startTime >= monitoringTimeoutMs) {
-                console.warn(`VERBOSE_LOG: [LLM Service Monitor] "${serverName}" timed out waiting to reach 'running' state.`);
+                console.warn(`"${serverName}" timed out waiting to reach 'running' state.`);
                 if (originalMessage.channel instanceof TextChannel || originalMessage.channel instanceof NewsChannel || originalMessage.channel instanceof ThreadChannel || originalMessage.channel instanceof DMChannel) {
                     await originalMessage.channel.send(`Server "${serverName}" (ID: ${serverIdentifier}) was installed but took too long to become fully online. Please check its status manually.`);
-                } else { console.warn(`VERBOSE_LOG: [LLM Service Monitor] Cannot send running timeout message to channel type: ${originalMessage.channel.type}`); }
+                } else { console.warn(`Cannot send running timeout message to channel type: ${originalMessage.channel.type}`); }
                 return;
             }
         }
 
     } catch (error) {
-        console.error(`VERBOSE_LOG: [LLM Service Monitor] CRITICAL_ERROR monitoring server "${serverName}":`, error);
+        console.error(`CRITICAL_ERROR monitoring server "${serverName}":`, error);
         try {
             if (originalMessage.channel instanceof TextChannel || originalMessage.channel instanceof NewsChannel || originalMessage.channel instanceof ThreadChannel || originalMessage.channel instanceof DMChannel) {
                 await originalMessage.channel.send(`An error occurred while monitoring the startup of server "${serverName}". Please check its status manually.`);
-            } else { console.warn(`VERBOSE_LOG: [LLM Service Monitor] Cannot send error message to channel type: ${originalMessage.channel.type}`); }
+            } else { console.warn(`Cannot send error message to channel type: ${originalMessage.channel.type}`); }
         } catch (discordError) {
-            console.error('VERBOSE_LOG: [LLM Service Monitor] Failed to send error message to Discord:', discordError);
+            console.error('Failed to send error message to Discord:', discordError);
         }
     }
 } 

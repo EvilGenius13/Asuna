@@ -1,0 +1,11 @@
+services:
+  asuna:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: asuna-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./.env:/app/.env:ro 

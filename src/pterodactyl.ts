@@ -133,17 +133,17 @@ interface PterodactylResourceResponse {
  * See: https://dashflo.net/docs/api/pterodactyl/v1/client/servers/list-servers/
  */
 export async function listServers(): Promise<PterodactylServer[]> {
-    console.log("VERBOSE_LOG: [Pterodactyl Service] Attempting to list servers...");
+    console.log("   Attempting to list servers...");
     if (!PTERO_API_URL || !PTERO_CLIENT_KEY) {
-        console.error("VERBOSE_LOG: [Pterodactyl Service] CRITICAL_ERROR: Pterodactyl API credentials not configured. Cannot list servers.");
+        console.error("CRITICAL_ERROR: Pterodactyl API credentials not configured. Cannot list servers.");
         return []; 
     }
     try {
         const response = await apiClient.get<PterodactylListResponse>('/api/client?include=allocations');
-        console.log(`VERBOSE_LOG: [Pterodactyl Service] Successfully listed ${response.data.data.length} servers.`);
+        console.log(`Successfully listed ${response.data.data.length} servers.`);
         return response.data.data; 
     } catch (error: any) {
-        console.error('VERBOSE_LOG: [Pterodactyl Service] CRITICAL_ERROR fetching Pterodactyl servers:', error.isAxiosError ? { status: error.response?.status, data: error.response?.data } : error);
+        console.error('CRITICAL_ERROR fetching Pterodactyl servers:', error.isAxiosError ? { status: error.response?.status, data: error.response?.data } : error);
         return []; 
     }
 }
@@ -154,7 +154,7 @@ export async function listServers(): Promise<PterodactylServer[]> {
  * @param serverId The identifier of the server (e.g., "261bf2bb")
  */
 export async function getServerResources(serverId: string): Promise<PterodactylServerResourceState | null> {
-    console.log(`VERBOSE_LOG: [Pterodactyl Service] Attempting to get resources for server ID: ${serverId}`);
+    console.log(`Attempting to get resources for server ID: ${serverId}`);
     if (!PTERO_API_URL || !PTERO_CLIENT_KEY) {
         console.error("Pterodactyl API credentials not configured. Cannot get server resources.");
         return null;
@@ -165,10 +165,10 @@ export async function getServerResources(serverId: string): Promise<PterodactylS
     }
     try {
         const response = await apiClient.get<PterodactylResourceResponse>(`/api/client/servers/${serverId}/resources`);
-        console.log(`VERBOSE_LOG: [Pterodactyl Service] Successfully fetched resources for server ID: ${serverId}`);
+        console.log(`Successfully fetched resources for server ID: ${serverId}`);
         return response.data.attributes;
     } catch (error: any) {
-        console.error(`VERBOSE_LOG: [Pterodactyl Service] CRITICAL_ERROR fetching resources for server ${serverId}:`, error.isAxiosError ? { status: error.response?.status, data: error.response?.data } : error);
+        console.error(`CRITICAL_ERROR fetching resources for server ${serverId}:`, error.isAxiosError ? { status: error.response?.status, data: error.response?.data } : error);
         return null;
     }
 }
@@ -181,7 +181,7 @@ export async function getServerResources(serverId: string): Promise<PterodactylS
  * @returns True if the signal was sent successfully (API returns 204 No Content), false otherwise.
  */
 export async function sendPowerSignal(serverId: string, signal: 'start' | 'stop' | 'restart' | 'kill'): Promise<boolean> {
-    console.log(`VERBOSE_LOG: [Pterodactyl Service] Attempting to send power signal '${signal}' to server ID: ${serverId}`);
+    console.log(`Attempting to send power signal '${signal}' to server ID: ${serverId}`);
     if (!PTERO_API_URL || !PTERO_CLIENT_KEY) {
         console.error("Pterodactyl API credentials not configured. Cannot send power signal.");
         return false;
@@ -198,10 +198,10 @@ export async function sendPowerSignal(serverId: string, signal: 'start' | 'stop'
     try {
         await apiClient.post(`/api/client/servers/${serverId}/power`, { signal: signal });
         // Pterodactyl API returns a 204 No Content on success for this endpoint
-        console.log(`VERBOSE_LOG: [Pterodactyl Service] Power signal '${signal}' sent successfully to server ${serverId}.`);
+        console.log(`Power signal '${signal}' sent successfully to server ${serverId}.`);
         return true;
     } catch (error: any) {
-        console.error(`VERBOSE_LOG: [Pterodactyl Service] CRITICAL_ERROR sending power signal '${signal}' to server ${serverId}:`, error.isAxiosError ? { status: error.response?.status, data: error.response?.data } : error);
+        console.error(`CRITICAL_ERROR sending power signal '${signal}' to server ${serverId}:`, error.isAxiosError ? { status: error.response?.status, data: error.response?.data } : error);
         return false;
     }
 }
@@ -219,7 +219,7 @@ export interface ServerOnlineStatusInfo {
  * This is more resource-intensive as it calls the resources endpoint for each server.
  */
 export async function getServersWithOnlineStatus(): Promise<ServerOnlineStatusInfo[]> {
-    console.log("VERBOSE_LOG: [Pterodactyl Service] Attempting to get online status for all servers...");
+    console.log("Attempting to get online status for all servers...");
     if (!PTERO_API_URL || !PTERO_CLIENT_KEY) {
         console.error("Pterodactyl API credentials not configured. Cannot get detailed server statuses.");
         return [];
@@ -227,16 +227,16 @@ export async function getServersWithOnlineStatus(): Promise<ServerOnlineStatusIn
 
     const allServersRaw = await listServers(); // listServers now includes allocations
     if (!allServersRaw || allServersRaw.length === 0) {
-        console.log("[Pterodactyl Service] No servers found when trying to get online statuses.");
+        console.log("No servers found when trying to get online statuses.");
         return [];
     }
-    console.log(`VERBOSE_LOG: [Pterodactyl Service] Found ${allServersRaw.length} servers. Fetching individual statuses...`);
+    console.log(`Found ${allServersRaw.length} servers. Fetching individual statuses...`);
 
     const statusInfoList: ServerOnlineStatusInfo[] = [];
 
     for (let i = 0; i < allServersRaw.length; i++) {
         const server = allServersRaw[i];
-        console.log(`VERBOSE_LOG: [Pterodactyl Service] Getting status for server ${i+1}/${allServersRaw.length}: ${server.attributes.name} (${server.attributes.identifier})`);
+        console.log(`Getting status for server ${i+1}/${allServersRaw.length}: ${server.attributes.name} (${server.attributes.identifier})`);
         const resources = await getServerResources(server.attributes.identifier);
         const defaultAllocation = server.attributes.relationships?.allocations?.data.find(a => a.attributes.is_default);
 
@@ -247,7 +247,7 @@ export async function getServersWithOnlineStatus(): Promise<ServerOnlineStatusIn
             default_port: defaultAllocation?.attributes.port
         });
     }
-    console.log(`VERBOSE_LOG: [Pterodactyl Service] Finished fetching all online statuses. Count: ${statusInfoList.length}`);
+    console.log(`Finished fetching all online statuses. Count: ${statusInfoList.length}`);
     return statusInfoList;
 }
 
@@ -257,26 +257,26 @@ export async function getServersWithOnlineStatus(): Promise<ServerOnlineStatusIn
  * and https://pterodactyl.io/application-api/endpoints/eggs.html (for includes)
  */
 export async function listNestsWithEggs(): Promise<PterodactylNest[]> {
-    console.log("VERBOSE_LOG: [Pterodactyl Service AppAPI] Attempting to list all Nests with their Eggs...");
+    console.log("Attempting to list all Nests with their Eggs...");
     if (!PTERO_API_URL || !PTERO_APP_KEY) {
-        console.error("VERBOSE_LOG: [Pterodactyl Service AppAPI] CRITICAL_ERROR: Pterodactyl API URL or Application Key not configured. Cannot list Nests/Eggs.");
+        console.error("CRITICAL_ERROR: Pterodactyl API URL or Application Key not configured. Cannot list Nests/Eggs.");
         return [];
     }
     try {
         // Using ?include=eggs to get eggs along with nests
         const response = await appApiClient.get<PterodactylAppListResponse<PterodactylNest>>('/api/application/nests?include=eggs');
         const nestsWithEggs = response.data.data;
-        console.log(`VERBOSE_LOG: [Pterodactyl Service AppAPI] Successfully listed ${nestsWithEggs.length} Nests.`);
+        console.log(`Successfully listed ${nestsWithEggs.length} Nests.`);
         
         // Optional: Log details about fetched eggs for verification
         nestsWithEggs.forEach(nest => {
             const eggCount = nest.attributes.relationships?.eggs?.data.length || 0;
-            console.log(`VERBOSE_LOG: [Pterodactyl Service AppAPI] Nest "${nest.attributes.name}" (ID: ${nest.attributes.id}) has ${eggCount} egg(s).`);
+            console.log(`Nest "${nest.attributes.name}" (ID: ${nest.attributes.id}) has ${eggCount} egg(s).`);
         });
 
         return nestsWithEggs;
     } catch (error: any) {
-        console.error('VERBOSE_LOG: [Pterodactyl Service AppAPI] CRITICAL_ERROR fetching Nests with Eggs:', error.isAxiosError ? { status: error.response?.status, data: error.response?.data } : error);
+        console.error('CRITICAL_ERROR fetching Nests with Eggs:', error.isAxiosError ? { status: error.response?.status, data: error.response?.data } : error);
         return [];
     }
 }
@@ -358,13 +358,13 @@ interface PterodactylAppListResponse<T> { // Generic for App API list responses
  * @param eggId The numeric ID of the Egg.
  */
 export async function getEggDetails(nestId: number, eggId: number): Promise<PterodactylEgg | null> {
-    console.log(`VERBOSE_LOG: [Pterodactyl Service AppAPI] Attempting to get details for Egg ID: ${eggId} in Nest ID: ${nestId}...`);
+    console.log(`Attempting to get details for Egg ID: ${eggId} in Nest ID: ${nestId}...`);
     if (!PTERO_API_URL || !PTERO_APP_KEY) {
-        console.error("VERBOSE_LOG: [Pterodactyl Service AppAPI] CRITICAL_ERROR: Pterodactyl API URL or Application Key not configured. Cannot get Egg details.");
+        console.error("CRITICAL_ERROR: Pterodactyl API URL or Application Key not configured. Cannot get Egg details.");
         return null;
     }
     if (!nestId || !eggId) {
-        console.error("VERBOSE_LOG: [Pterodactyl Service AppAPI] Nest ID and Egg ID are required to get Egg details.");
+        console.error("Nest ID and Egg ID are required to get Egg details.");
         return null;
     }
 
@@ -380,10 +380,10 @@ export async function getEggDetails(nestId: number, eggId: number): Promise<Pter
         // Let's assume the response is directly the PterodactylEgg object itself (which has 'object' and 'attributes')
         const eggDetails = response.data as PterodactylEgg; // Casting, assuming the API returns the full PterodactylEgg structure
 
-        console.log(`VERBOSE_LOG: [Pterodactyl Service AppAPI] Successfully fetched details for Egg "${eggDetails.attributes.name}". Variables count: ${eggDetails.attributes.relationships?.variables?.data.length || 0}.`);
+        console.log(`Successfully fetched details for Egg "${eggDetails.attributes.name}". Variables count: ${eggDetails.attributes.relationships?.variables?.data.length || 0}.`);
         return eggDetails;
     } catch (error: any) {
-        console.error(`VERBOSE_LOG: [Pterodactyl Service AppAPI] CRITICAL_ERROR fetching details for Egg ID ${eggId} in Nest ID ${nestId}:`, error.isAxiosError ? { status: error.response?.status, data: error.response?.data } : error);
+        console.error(`CRITICAL_ERROR fetching details for Egg ID ${eggId} in Nest ID ${nestId}:`, error.isAxiosError ? { status: error.response?.status, data: error.response?.data } : error);
         return null;
     }
 }
@@ -408,13 +408,13 @@ export interface PterodactylAllocation {
  * @returns A PterodactylAllocation object if one is found, otherwise null.
  */
 export async function findAvailableAllocation(nodeId: number): Promise<PterodactylAllocation | null> {
-    console.log(`VERBOSE_LOG: [Pterodactyl Service AppAPI] Attempting to find an available allocation on Node ID: ${nodeId}...`);
+    console.log(`Attempting to find an available allocation on Node ID: ${nodeId}...`);
     if (!PTERO_API_URL || !PTERO_APP_KEY) {
-        console.error("VERBOSE_LOG: [Pterodactyl Service AppAPI] CRITICAL_ERROR: Pterodactyl API URL or Application Key not configured. Cannot find allocations.");
+        console.error("CRITICAL_ERROR: Pterodactyl API URL or Application Key not configured. Cannot find allocations.");
         return null;
     }
     if (!nodeId) {
-        console.error("VERBOSE_LOG: [Pterodactyl Service AppAPI] Node ID is required to find an allocation.");
+        console.error("Node ID is required to find an allocation.");
         return null;
     }
 
@@ -425,14 +425,14 @@ export async function findAvailableAllocation(nodeId: number): Promise<Pterodact
         const availableAllocation = allocations.find(alloc => !alloc.attributes.assigned);
 
         if (availableAllocation) {
-            console.log(`VERBOSE_LOG: [Pterodactyl Service AppAPI] Found available allocation: ID ${availableAllocation.attributes.id} (${availableAllocation.attributes.ip}:${availableAllocation.attributes.port}) on Node ID: ${nodeId}.`);
+            console.log(`Found available allocation: ID ${availableAllocation.attributes.id} (${availableAllocation.attributes.ip}:${availableAllocation.attributes.port}) on Node ID: ${nodeId}.`);
             return availableAllocation;
         } else {
-            console.warn(`VERBOSE_LOG: [Pterodactyl Service AppAPI] WARNING: No available allocations found on Node ID: ${nodeId}.`);
+            console.warn(`WARNING: No available allocations found on Node ID: ${nodeId}.`);
             return null;
         }
     } catch (error: any) {
-        console.error(`VERBOSE_LOG: [Pterodactyl Service AppAPI] CRITICAL_ERROR fetching allocations for Node ID ${nodeId}:`, error.isAxiosError ? { status: error.response?.status, data: error.response?.data } : error);
+        console.error(`CRITICAL_ERROR fetching allocations for Node ID ${nodeId}:`, error.isAxiosError ? { status: error.response?.status, data: error.response?.data } : error);
         return null;
     }
 }
@@ -474,15 +474,15 @@ export interface ServerCreationOptions {
  * @returns The created PterodactylServer object if successful, otherwise null.
  */
 export async function createServer(options: ServerCreationOptions): Promise<PterodactylServer | null> {
-    console.log(`VERBOSE_LOG: [Pterodactyl Service AppAPI] Attempting to create server "${options.name}"...`);
+    console.log(`Attempting to create server "${options.name}"...`);
     if (!PTERO_API_URL || !PTERO_APP_KEY) {
-        console.error("VERBOSE_LOG: [Pterodactyl Service AppAPI] CRITICAL_ERROR: Pterodactyl API URL or Application Key not configured. Cannot create server.");
+        console.error("CRITICAL_ERROR: Pterodactyl API URL or Application Key not configured. Cannot create server.");
         return null;
     }
 
     // Basic validation of required options
     if (!options.name || !options.user || !options.egg || !options.docker_image || !options.startup || !options.allocation?.default) {
-        console.error("VERBOSE_LOG: [Pterodactyl Service AppAPI] CRITICAL_ERROR: Missing critical options for server creation.", options);
+        console.error("CRITICAL_ERROR: Missing critical options for server creation.", options);
         return null;
     }
 
@@ -501,16 +501,16 @@ export async function createServer(options: ServerCreationOptions): Promise<Pter
             // description: options.description || '',
         };
 
-        console.log("VERBOSE_LOG: [Pterodactyl Service AppAPI] Server creation payload:", JSON.stringify(payload, null, 2));
+        console.log("Server creation payload:", JSON.stringify(payload, null, 2));
 
         const response = await appApiClient.post<PterodactylServer>('/api/application/servers', payload);
         
         // The response for server creation should be the full server object (type PterodactylServer)
-        console.log(`VERBOSE_LOG: [Pterodactyl Service AppAPI] Successfully created server "${response.data.attributes.name}" (ID: ${response.data.attributes.identifier}, UUID: ${response.data.attributes.uuid}).`);
+        console.log(`Successfully created server "${response.data.attributes.name}" (ID: ${response.data.attributes.identifier}, UUID: ${response.data.attributes.uuid}).`);
         return response.data; // This should be the PterodactylServer object
 
     } catch (error: any) {
-        console.error(`VERBOSE_LOG: [Pterodactyl Service AppAPI] CRITICAL_ERROR creating server "${options.name}":`, 
+        console.error(`CRITICAL_ERROR creating server "${options.name}":`, 
             error.isAxiosError ? 
             { 
                 status: error.response?.status, 
@@ -526,7 +526,7 @@ export async function createServer(options: ServerCreationOptions): Promise<Pter
         );
         // Log detailed validation errors if available (Pterodactyl often returns these in errors[0].detail)
         if (error.response?.data?.errors) {
-            console.error("VERBOSE_LOG: [Pterodactyl Service AppAPI] Validation Errors:", JSON.stringify(error.response.data.errors, null, 2));
+            console.error("Validation Errors:", JSON.stringify(error.response.data.errors, null, 2));
         }
         return null;
     }
