@@ -16,7 +16,9 @@ import {
     PterodactylEgg,
     PterodactylEggVariable,
     ServerCreationOptions,
-    PterodactylAllocation
+    PterodactylAllocation,
+    updateServerBuildConfiguration, // Added for new tool
+    ServerBuildConfigurationOptions // Added for new tool
 } from './pterodactyl'; // Import actual functions
 import { Message, TextChannel, NewsChannel, ThreadChannel, DMChannel } from 'discord.js'; // Import Message and channel types
 
@@ -259,6 +261,38 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                 required: ['server_name', 'egg_name']
             }
         }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'edit_pterodactyl_server_resources',
+            description: 'Edit an existing Pterodactyl game server\'s resources, such as CPU limit, RAM allocation, or disk space. You must specify the server by its name or ID. You must also specify at least one resource to change (CPU, memory, or disk).',
+            parameters: {
+                type: 'object',
+                properties: {
+                    server_name_or_id: {
+                        type: 'string',
+                        description: 'The unique identifier (e.g., "261bf2bb") or the user-friendly name (e.g., "My Minecraft Server") of the server to edit.'
+                    },
+                    cpu_percentage: { // Changed from 'cpu' to 'cpu_percentage' for clarity with Pterodactyl API
+                        type: 'number',
+                        description: 'Optional. The new CPU limit as a percentage (e.g., 200 for 2 vCPU cores, 50 for half a vCPU core).'
+                    },
+                    memory_mb: {
+                        type: 'number',
+                        description: 'Optional. The new memory allocation in Megabytes (MB) (e.g., 4096 for 4GB, 512 for 0.5GB).'
+                    },
+                    disk_mb: {
+                        type: 'number',
+                        description: 'Optional. The new disk space allocation in Megabytes (MB) (e.g., 20480 for 20GB).'
+                    }
+                    // Note: We are not including swap or IO here for simplicity in the LLM interface,
+                    // but the backend `updateServerBuildConfiguration` function can support them if its `options.limits` includes them.
+                    // We are also not including feature_limits in the tool definition for the LLM to keep it focused.
+                },
+                required: ['server_name_or_id'], // User must specify server. LLM should ensure at least one resource is also given.
+            },
+        },
     }
 ];
 
@@ -293,7 +327,8 @@ export async function processUserQueryWithLLM(discordMessage: Message): Promise<
             \nUse \`send_pterodactyl_power_signal\` to start/stop/restart servers. 
             \nUse \`list_available_games_and_types\` to show what can be installed. 
             \nUse \`get_specific_egg_installation_details\` for setup requirements of a game type. 
-            \nUse \`create_pterodactyl_server\` to create a new server; you MUST ask for a server name and the type of game (Egg). 
+            \nUse \`create_pterodactyl_server\` to create a new server; you MUST ask for a server name and the type of game (Egg).
+            \nUse \`edit_pterodactyl_server_resources\` to change CPU, memory, or disk for a server; you MUST ask for the server name/ID and at least one resource to change.
             \nWhen creating servers, if the user provides any configuration values (like passwords, admin IDs, etc.), you MUST include them in the environment_variables object using the exact environment variable name from the egg (e.g., if the egg requires SNM_OWNER_STEAM_ID, use that exact name).
             \nIf a tool provides a specific \`user_message\` in its JSON response, use that message directly for the user. 
             \nOtherwise, summarize function results. Do not output raw JSON. Confirm important actions.
@@ -335,25 +370,64 @@ export async function processUserQueryWithLLM(discordMessage: Message): Promise<
                 const functionName = toolCall.function.name;
                 const functionArgs = JSON.parse(toolCall.function.arguments);
                 let functionResponseContent = '';
-                let actualServerId = '';
-
+                    
                 // Common logic to resolve serverId if provided as name for functions that need it
-                async function resolveServerId(query: string): Promise<string | null> {
+                    // This version returns only the identifier string, suitable for client API calls.
+                    async function resolveServerIdentifier(query: string): Promise<string | null> {
                     const allServers = await listServers();
+                        if (!allServers || allServers.length === 0) return null;
                     let targetServer: PterodactylServer | undefined = allServers.find((s: PterodactylServer) => s.attributes.identifier === query);
                     if (!targetServer) {
                         const lowerCaseQuery = query.toLowerCase();
                         const matchingByName = allServers.filter((s: PterodactylServer) => s.attributes.name.toLowerCase().includes(lowerCaseQuery));
                         if (matchingByName.length === 1) targetServer = matchingByName[0];
                         else if (matchingByName.length > 1) { 
-                            console.log(`Ambiguous server query: "${query}". Multiple matches found.`);
-                            return null; 
+                                console.log(`Ambiguous server query for identifier: "${query}". Multiple matches found.`);
+                                return null; // Ambiguous
                         }
                     }
                     const resolvedId = targetServer ? targetServer.attributes.identifier : null;
-                    console.log(`Query: "${query}", Resolved ID: "${resolvedId}"`);
+                        console.log(`Identifier Query: "${query}", Resolved Identifier: "${resolvedId}"`);
                     return resolvedId;
                 }
+
+                    // New function to resolve to the full PterodactylServer object, needed for internal numeric ID.
+                    // Returns the server object, or an error object for the LLM.
+                    async function resolveServerFullObject(query: string): Promise<PterodactylServer | { error: string; user_message: string }> {
+                        const allServers = await listServers(); 
+                        if (!allServers || allServers.length === 0) {
+                            return { error: "No servers found", user_message: "I couldn't find any servers registered at all." };
+                        }
+
+                        let targetServer: PterodactylServer | undefined = allServers.find(s => s.attributes.identifier === query);
+
+                        if (!targetServer) {
+                            const lowerCaseQuery = query.toLowerCase();
+                            const matchingByName = allServers.filter(s => s.attributes.name.toLowerCase().includes(lowerCaseQuery));
+                            if (matchingByName.length === 1) {
+                                targetServer = matchingByName[0];
+                            } else if (matchingByName.length > 1) {
+                                let response = `I found multiple servers matching the name "${query}". Please be more specific or use the server's short ID:\n`;
+                                matchingByName.forEach(s => {
+                                    response += `- **${s.attributes.name}** (ID: \`${s.attributes.identifier}\`)\n`;
+                                });
+                                return { 
+                                    error: `Ambiguous server query: "${query}". Multiple matches.`,
+                                    user_message: response 
+                                };
+                            }
+                        }
+
+                        if (!targetServer) {
+                            return { 
+                                error: `Server with name or ID matching "${query}" not found.`,
+                                user_message: `I couldn't find a server with the ID or name matching "${query}". You can use the 'list servers' command to see available servers.`
+                            };
+                        }
+                        console.log(`Full Object Query: "${query}", Resolved Server Name: "${targetServer.attributes.name}", Numeric ID: ${targetServer.attributes.id}`);
+                        return targetServer; // Return the full server object
+                    }
+
 
                 try {
                     if (functionName === 'list_pterodactyl_servers_basic_info') {
@@ -371,26 +445,32 @@ export async function processUserQueryWithLLM(discordMessage: Message): Promise<
                         });
                         functionResponseContent = JSON.stringify(simplifiedServers);
                     } else if (functionName === 'get_specific_server_details_and_status') {
-                        actualServerId = await resolveServerId(functionArgs.serverId as string) || '';
-                        if (actualServerId) {
-                            const resources: PterodactylServerResourceState | null = await getServerResources(actualServerId);
+                        const serverIdForDetails = await resolveServerIdentifier(functionArgs.serverId as string);
+                        if (serverIdForDetails) {
+                            const resources: PterodactylServerResourceState | null = await getServerResources(serverIdForDetails);
                             functionResponseContent = JSON.stringify(resources);
                         } else {
-                            functionResponseContent = JSON.stringify({ error: `Server with name or ID '${functionArgs.serverId}' not found or is ambiguous.` });
+                            functionResponseContent = JSON.stringify({ 
+                                error: `Server with name or ID '${functionArgs.serverId}' not found or is ambiguous.`,
+                                user_message: `I couldn't find a server with the name or ID '${functionArgs.serverId}', or the name was too vague. Please try again with a more specific name or the server's short ID.`
+                            });
                         }
                     } else if (functionName === 'get_online_status_for_all_servers') {
                         const statuses: ServerOnlineStatusInfo[] = await getServersWithOnlineStatus();
                         functionResponseContent = JSON.stringify(statuses);
                     } else if (functionName === 'send_pterodactyl_power_signal') {
-                        actualServerId = await resolveServerId(functionArgs.serverId as string) || '';
+                        const serverIdForSignal = await resolveServerIdentifier(functionArgs.serverId as string);
                         const signal = functionArgs.signal as 'start' | 'stop' | 'restart' | 'kill';
-                        if (actualServerId) {
-                            const success = await sendPowerSignal(actualServerId, signal);
-                            functionResponseContent = JSON.stringify({ success: success, serverId: actualServerId, signal: signal });
+                        if (serverIdForSignal) {
+                            const success = await sendPowerSignal(serverIdForSignal, signal);
+                            functionResponseContent = JSON.stringify({ success: success, serverId: serverIdForSignal, signal: signal });
                         } else {
-                            functionResponseContent = JSON.stringify({ error: `Server with name or ID '${functionArgs.serverId}' not found or is ambiguous for power signal.` });
+                            functionResponseContent = JSON.stringify({ 
+                                error: `Server with name or ID '${functionArgs.serverId}' not found or is ambiguous for power signal.`,
+                                user_message: `I couldn't find a server with the name or ID '${functionArgs.serverId}' to send the power signal, or the name was too vague. Please try again with a more specific name or the server's short ID.`
+                            });
                         }
-                    } else if (functionName === 'list_available_games_and_types') { // Handle new function
+                    } else if (functionName === 'list_available_games_and_types') {
                         const nests: PterodactylNest[] = await listNestsWithEggs();
                         const simplifiedNests: SimplifiedNestInfo[] = nests.map(nest => ({
                             nest_name: nest.attributes.name,
@@ -541,8 +621,8 @@ export async function processUserQueryWithLLM(discordMessage: Message): Promise<
                                         if (createdServer) {
                                             // Call the monitor function (fire and forget)
                                             monitorServerInstallationAndStartup(
-                                                createdServer.attributes.uuid, // Using UUID for App API calls initially
-                                                createdServer.attributes.identifier, // For client API resource checks
+                                                createdServer.attributes.uuid, 
+                                                createdServer.attributes.identifier, 
                                                 createdServer.attributes.name, 
                                                 discordMessage
                                             );
@@ -552,15 +632,63 @@ export async function processUserQueryWithLLM(discordMessage: Message): Promise<
                                                 user_message: `I've started the creation process for server "${createdServer.attributes.name}". I will send another message here when it's fully online and ready!`
                                             });
                                         } else {
-                                            functionResponseContent = JSON.stringify({ error: 'Server creation process failed at the API level. Check bot logs for details.' });
+                                            functionResponseContent = JSON.stringify({ 
+                                                error: 'Server creation process failed at the API level. Check bot logs for details.',
+                                                user_message: `I couldn't complete the server creation for "${serverName}". There was an issue with the final step. Please check the bot logs or try again.`
+                                            });
                                         }
                                     }
                                 }
                             }
                         }
-                    } else {
+                    } else if (functionName === 'edit_pterodactyl_server_resources') {
+                        const serverQuery = functionArgs.server_name_or_id as string;
+                        const cpu = functionArgs.cpu_percentage as number | undefined;
+                        const memory = functionArgs.memory_mb as number | undefined;
+                        const disk = functionArgs.disk_mb as number | undefined;
+
+                        if (cpu === undefined && memory === undefined && disk === undefined) {
+                            functionResponseContent = JSON.stringify({ 
+                                error: "No resource changes specified.",
+                                user_message: "You asked me to edit a server's resources, but didn't specify what to change. Please tell me the new CPU, memory, or disk values you'd like."
+                            });
+                        } else {
+                            const serverLookupResult = await resolveServerFullObject(serverQuery);
+
+                            if ('error' in serverLookupResult) { // Error object returned
+                                functionResponseContent = JSON.stringify(serverLookupResult);
+                            } else {
+                                const targetServerObject = serverLookupResult; // PterodactylServer object
+                                const numericServerId = targetServerObject.attributes.id; // Numeric ID for App API
+
+                                const buildOptions: ServerBuildConfigurationOptions = { limits: {} };
+                                if (cpu !== undefined) buildOptions.limits!.cpu = cpu;
+                                if (memory !== undefined) buildOptions.limits!.memory = memory;
+                                if (disk !== undefined) buildOptions.limits!.disk = disk;
+                                // Note: Pterodactyl API requires 'allocation_id' to be part of the payload
+                                // for /build endpoint, but our updateServerBuildConfiguration handles fetching it.
+
+                                const updatedServer = await updateServerBuildConfiguration(numericServerId, buildOptions);
+
+                                if (updatedServer) {
+                                    functionResponseContent = JSON.stringify({
+                                        success: true,
+                                        server_name: updatedServer.attributes.name,
+                                        updated_limits: updatedServer.attributes.limits,
+                                        user_message: `Successfully updated server **${updatedServer.attributes.name}**. New limits: CPU: ${updatedServer.attributes.limits.cpu}%, Memory: ${updatedServer.attributes.limits.memory}MB, Disk: ${updatedServer.attributes.limits.disk}MB.`
+                                    });
+                                } else {
+                                    functionResponseContent = JSON.stringify({
+                                        error: `Failed to update server resources for ${targetServerObject.attributes.name}.`,
+                                        user_message: `I couldn't update the server resources for **${targetServerObject.attributes.name}**. There might have been an issue with the request or the server itself. Please check the bot logs if the problem persists.`
+                                    });
+                                }
+                            }
+                        }
+                    }
+                     else {
                         console.warn(`LLM tried to call unknown function: ${functionName}`);
-                        functionResponseContent = JSON.stringify({ error: `Unknown function: ${functionName}` });
+                        functionResponseContent = JSON.stringify({ error: `Unknown function: ${functionName}`, user_message: "Sorry, I'm not sure how to do that." });
                     }
                     console.log(`Tool ${functionName} executed. Response content length: ${functionResponseContent.length}`);
                 } catch (toolError: any) {
