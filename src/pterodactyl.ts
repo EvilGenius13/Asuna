@@ -389,6 +389,22 @@ export async function getEggDetails(nestId: number, eggId: number): Promise<Pter
 }
 
 // Interface for Pterodactyl Allocation
+// prettier-ignore
+export interface ServerBuildConfigurationOptions {
+    limits?: {
+        memory?: number; // In MB
+        swap?: number;   // In MB
+        disk?: number;   // In MB
+        io?: number;     // IO weight (10-1000)
+        cpu?: number;    // CPU limit in percentage (100 = 1 core)
+    };
+    feature_limits?: {
+        databases?: number;
+        allocations?: number;
+        backups?: number;
+    };
+}
+
 export interface PterodactylAllocation {
     object: 'allocation';
     attributes: {
@@ -530,4 +546,100 @@ export async function createServer(options: ServerCreationOptions): Promise<Pter
         }
         return null;
     }
-} 
+}
+
+/**
+ * Updates a server's build configuration (limits, features, allocation).
+ * See: https://pterodactyl.io/application-api/endpoints/servers.html#update-a-servers-build-configuration
+ * @param serverId The internal numeric ID of the server.
+ * @param options The configuration options to update.
+ * @returns The updated PterodactylServer object if successful, otherwise null.
+ */
+export async function updateServerBuildConfiguration(
+    serverId: number,
+    options: ServerBuildConfigurationOptions
+): Promise<PterodactylServer | null> {
+    console.log(`Attempting to update build configuration for server ID: ${serverId}...`);
+    if (!PTERO_API_URL || !PTERO_APP_KEY) {
+        console.error("CRITICAL_ERROR: Pterodactyl API URL or Application Key not configured. Cannot update server build configuration.");
+        return null;
+    }
+    if (!serverId) {
+        console.error("CRITICAL_ERROR: Server ID is required to update build configuration.");
+        return null;
+    }
+
+    try {
+        // 1. Fetch Existing Server Details
+        // The API endpoint for fetching a single server is /api/application/servers/{server_id}
+        // It should return a PterodactylServer object.
+        console.log(`   Fetching current details for server ID: ${serverId}...`);
+        const serverDetailsResponse = await appApiClient.get<PterodactylServer>(`/api/application/servers/${serverId}`);
+        const currentServer = serverDetailsResponse.data;
+
+        if (!currentServer || !currentServer.attributes) {
+            console.error(`CRITICAL_ERROR: Could not fetch details for server ID: ${serverId}. Or server data is invalid.`);
+            return null;
+        }
+        console.log(`   Successfully fetched details for server: ${currentServer.attributes.name}`);
+
+        // 2. Construct the Payload
+        const currentLimits = currentServer.attributes.limits;
+        const currentFeatureLimits = currentServer.attributes.feature_limits;
+        const allocationId = currentServer.attributes.allocation; // This is the numeric ID of the default allocation
+
+        if (!allocationId) {
+            console.error(`CRITICAL_ERROR: Default allocation ID not found for server ID: ${serverId}. Cannot update build configuration.`);
+            return null;
+        }
+
+        const payload = {
+            allocation_id: allocationId,
+            limits: {
+                memory: options.limits?.memory ?? currentLimits.memory,
+                swap: options.limits?.swap ?? currentLimits.swap,
+                disk: options.limits?.disk ?? currentLimits.disk,
+                io: options.limits?.io ?? currentLimits.io,
+                cpu: options.limits?.cpu ?? currentLimits.cpu,
+            },
+            feature_limits: {
+                databases: options.feature_limits?.databases ?? currentFeatureLimits.databases,
+                allocations: options.feature_limits?.allocations ?? currentFeatureLimits.allocations,
+                backups: options.feature_limits?.backups ?? currentFeatureLimits.backups,
+            },
+            add_allocations: [], // As per instructions, keep empty for now
+            remove_allocations: [], // As per instructions, keep empty for now
+        };
+
+        console.log(`   Update payload for server ID ${serverId}:`, JSON.stringify(payload, null, 2));
+
+        // 3. API Call to Update Build Configuration
+        const response = await appApiClient.patch<PterodactylServer>(
+            `/api/application/servers/${serverId}/build`,
+            payload
+        );
+
+        console.log(`Successfully updated build configuration for server "${response.data.attributes.name}" (ID: ${response.data.attributes.identifier}).`);
+        return response.data; // This should be the updated PterodactylServer object
+
+    } catch (error: any) {
+        console.error(
+            `CRITICAL_ERROR updating build configuration for server ID ${serverId}:`,
+            error.isAxiosError
+                ? {
+                      status: error.response?.status,
+                      data: error.response?.data,
+                      config: {
+                          url: error.config?.url,
+                          method: error.config?.method,
+                          // data: error.config?.data // Payload is logged above
+                      },
+                  }
+                : error
+        );
+        if (error.response?.data?.errors) {
+            console.error("Validation Errors:", JSON.stringify(error.response.data.errors, null, 2));
+        }
+        return null;
+    }
+}
